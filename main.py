@@ -159,7 +159,7 @@ def draw_text_on_pdf(doc: fitz.Document, data: List[Dict[str, Any]]) -> None:
         return
 
     # --- CALIBRATION ---
-    X_CALIBRATION_PX = -2.0    
+    X_CALIBRATION_PX = -1.0    
     Y_CALIBRATION_PX = -1.0   
 
     extra_gap = 0.0           
@@ -214,7 +214,7 @@ def draw_text_on_pdf(doc: fitz.Document, data: List[Dict[str, Any]]) -> None:
                 
                 # ✅ FIX 1: LEFT/RIGHT ARTIFACTS
                 # Increase X padding to cover previous text fully
-                bg_pad_x = 1.0  
+                bg_pad_x = 0.5  
                 
                 # ✅ FIX 2: BOTTOM WHITE SPACE
                 # Use a larger NEGATIVE number for bottom padding to shrink the box height
