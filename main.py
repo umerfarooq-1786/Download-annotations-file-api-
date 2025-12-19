@@ -9,6 +9,11 @@ import math
 import fitz  # PyMuPDF
 from typing import Optional, List, Any, Dict, Tuple
 import logging
+import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 logger = logging.getLogger("uvicorn")
 
@@ -502,3 +507,8 @@ async def annotate_pdf(
     except Exception as e:
         logger.error("Error processing PDF download: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to process PDF download: {str(e)}")
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
