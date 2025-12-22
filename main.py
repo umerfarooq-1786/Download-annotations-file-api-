@@ -149,21 +149,23 @@ def font_ascender_px(fontname: str, fontsize: float) -> float:
 # ----------------------------
 def draw_text_on_pdf(doc: fitz.Document, data: List[Dict[str, Any]]) -> None:
     """
-    FIXES APPLIED:
-      ✅ Bottom White Space: Reduced vertical padding (bg_pad_y_bot = -4.0).
-      ✅ Left Artifacts: Increased horizontal padding (bg_pad_x = 5.0).
-      ✅ Wrapping: Increased tolerance (w * 0.5) to keep single lines intact.
+    FIX:
+    - Your frontend sends rect.topPct as TOP of box.
+    - PyMuPDF insert_text uses BASELINE.
+    - So we compute baseline from TOP using a stable font baseline ratio.
+    - Also: treat ALL textObjects as "edittext" (because your JSON doesn't include annotationType).
     """
 
     if not data:
         return
 
-    # --- CALIBRATION ---
-    X_CALIBRATION_PX = -1.0    
-    Y_CALIBRATION_PX = -1.0   
+    # Small calibration knobs (tweak if you want)
+    X_CALIBRATION_PX = -3.0
+    Y_CALIBRATION_PX = -1.0 # move slightly UP overall (helps your issue)
 
-    extra_gap = 0.0           
-    line_mult = 1.13          
+    # Line spacing
+    line_mult = 1.15
+    extra_gap = 0.0
 
     for item in data:
         page_number = int(item.get("pageNumber", 1))
@@ -176,10 +178,10 @@ def draw_text_on_pdf(doc: fitz.Document, data: List[Dict[str, Any]]) -> None:
 
         for obj in item.get("textObjects", []):
             text = obj.get("text", "")
-            if not text:
+            if text is None:
                 continue
+            text = str(text)
 
-            # 1. Coordinates
             rect_pct = obj.get("rect") or {}
             left_pct = float(rect_pct.get("leftPct", 0.0))
             top_pct = float(rect_pct.get("topPct", 0.0))
@@ -191,13 +193,11 @@ def draw_text_on_pdf(doc: fitz.Document, data: List[Dict[str, Any]]) -> None:
             w = (width_pct / 100.0) * page_rect.width
             h = (height_pct / 100.0) * page_rect.height
 
-            # 2. Styles
             fontsize = float(obj.get("size", 12.0))
             font_style = obj.get("fontStyle", "normal")
             font_weight = obj.get("fontWeight", "normal")
             fontname = pick_fontname(font_style, font_weight)
 
-            # 3. Colors
             color_str = obj.get("color", "#000000")
             r, g, b, _a = css_color_to_rgba01(color_str)
 
@@ -205,65 +205,78 @@ def draw_text_on_pdf(doc: fitz.Document, data: List[Dict[str, Any]]) -> None:
             underline = bool(obj.get("underline", False))
             linethrough = bool(obj.get("linethrough", False))
 
-            ann_type = str(obj.get("annotationType", "")).lower()
-            is_edittext = ann_type == "edittext"
+            # ✅ IMPORTANT FIX:
+            # your JSON doesn't include annotationType, so always treat as edittext
+            is_edittext = True
 
-            # 4. Draw Background (PADDING FIXES)
+            # --- Background ---
             if background_hex:
                 br, bg, bb = hex_to_rgb01(background_hex)
-                
-                # ✅ FIX 1: LEFT/RIGHT ARTIFACTS
-                # Increase X padding to cover previous text fully
-                bg_pad_x = 0.5  
-                
-                # ✅ FIX 2: BOTTOM WHITE SPACE
-                # Use a larger NEGATIVE number for bottom padding to shrink the box height
-                # so it doesn't cover the line below.
-                bg_pad_y_top = 2.0   
-                bg_pad_y_bot = -2.0  # Shrink bottom significantly
-                
+
+                # slightly larger padding so it fully covers underlying text
+                bg_pad_x = 3.0
+                bg_pad_x_bot = -2.0
+                bg_pad_y_top = 3.0
+                bg_pad_y_bot = -5.0
+
                 clean_rect = fitz.Rect(
-                    x - bg_pad_x, 
-                    y - bg_pad_y_top, 
-                    x + w + bg_pad_x, 
+                    x - bg_pad_x,
+                    y - bg_pad_y_top,
+                    x + w + bg_pad_x_bot,
                     y + h + bg_pad_y_bot
                 )
-                
                 page.draw_rect(clean_rect, color=None, fill=(br, bg, bb))
 
-            # 5. Layout & Wrapping Fix
+            # --- Text layout (TOP aligned) ---
             pad = max(1.0, fontsize * 0.08)
-            
-            # ✅ FIX 3: TEXT WRAPPING
-            # Add 50% buffer to width. If frontend fits it, backend fits it.
-            wrapping_buffer = w * 0.0 
-            usable_w = w + wrapping_buffer    
+            usable_w = max(1.0, w - (pad * 2))
 
+            # keep your wrap logic
             lines = wrap_text_to_width(text, usable_w, fontname, fontsize)
 
-            asc_px = font_ascender_px(fontname, fontsize)
+            # baseline from TOP:
+            # Most fonts baseline sits around 0.75~0.82 of fontsize from top.
+            baseline_from_top = fontsize * 0.80
+
+            # edittext needs a small upward correction (this is what your old code tried)
             extra_up = (-0.25 * fontsize) if is_edittext else 0.0
 
-            baseline_y = (y + pad + asc_px + Y_CALIBRATION_PX + extra_up)
             x0 = x + pad + X_CALIBRATION_PX
-            step = (fontsize * line_mult) + extra_gap
+            baseline_y = y + pad + baseline_from_top + Y_CALIBRATION_PX + extra_up
+
+            line_step = (fontsize * line_mult) + extra_gap
             cur_y = baseline_y
 
-            # 6. Draw Lines
             for line in lines:
-                page.insert_text((x0, cur_y), line, fontsize=fontsize, fontname=fontname, color=(r, g, b))
+                page.insert_text(
+                    (x0, cur_y),
+                    line,
+                    fontsize=fontsize,
+                    fontname=fontname,
+                    color=(r, g, b),
+                )
 
                 line_w = safe_text_width(line, fontname, fontsize)
 
                 if linethrough:
-                    strike_y = cur_y - (fontsize * 0.28) 
-                    page.draw_line(p1=(x0, strike_y), p2=(x0 + line_w, strike_y), color=(r, g, b), width=1)
+                    strike_y = cur_y - (fontsize * 0.28)
+                    page.draw_line(
+                        p1=(x0, strike_y),
+                        p2=(x0 + line_w, strike_y),
+                        color=(r, g, b),
+                        width=1,
+                    )
 
                 if underline:
-                    under_y = cur_y + 2.0 
-                    page.draw_line(p1=(x0, under_y), p2=(x0 + line_w, under_y), color=(r, g, b), width=1)
+                    under_y = cur_y + 2.0
+                    page.draw_line(
+                        p1=(x0, under_y),
+                        p2=(x0 + line_w, under_y),
+                        color=(r, g, b),
+                        width=1,
+                    )
 
-                cur_y += step
+                cur_y += line_step
 
 
 # ----------------------------
